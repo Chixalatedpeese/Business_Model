@@ -88,3 +88,75 @@ Simple, fast, practical business management system for a Sri Lankan trading/dist
 - `/app/test_reports/iteration_2.json` (Phase 1)
 - `/app/test_reports/iteration_3.json` (Phase 2 — 18/18 backend ✅)
 - `/app/backend/tests/test_phase2.py` (automated regression suite)
+
+## Phase 3 — Workflow Refinements (April 23, 2026) ✅ COMPLETE
+
+### Invoice System Corrections
+- Removed manual invoice creation UI entirely (Invoices tab has no New Invoice button; Dashboard Quick Actions replaced "New Invoice" with "Analytics")
+- Invoices are generated ONLY from Orders via `POST /api/invoices/from-order/{order_id}`
+- Info banner on Invoices page: "Invoices are generated from Orders"
+
+### Dashboard Quick Action Fixes
+- "New Order" → `/orders?new=1` auto-opens Create Order dialog (useSearchParams)
+- "Record Payment" → `/payments?new=1` auto-opens Record Payment dialog
+- Added "Analytics" quick action linking to new page
+
+### Analytics Page (NEW)
+- Route: `/analytics` with sidebar nav item
+- Charts (Recharts): Sales Trend (area), Revenue vs Cost (line), Profit Trend (area)
+- Period filter buttons: 30 Days / 60 Days / 90 Days / 1 Year
+- Summary tiles: Total Sales, Total Profit, Data Points
+
+### Multi-Cheque Payment Entry (CRITICAL)
+- Backend: `PaymentCreate.cheques: List[ChequeDetail]` with (amount, bank_name, cheque_number, cheque_date); sum validated to equal payment amount
+- Frontend: "Add Cheque" button in payment dialog when method=cheque adds dynamic cheque rows; running total shown vs payment amount (green when matched, amber when mismatched)
+
+### Edit Payment Feature
+- `PUT /api/payments/{id}` — accepts partial updates (amount, method, cheques, allocations, notes)
+- Validates cheque sum and allocation sum vs new amount
+- If amount reduced without resending allocations, rejects if existing allocations exceed new amount
+- Recalculates invoice statuses for both old and new allocation targets
+- Frontend: Pencil icon per row → opens pre-filled Edit Payment dialog
+
+### Multi-Invoice Allocation UI
+- Payment dialog has "Allocate to Invoices/Purchases" section with "+Add Allocation" button
+- Each allocation row = SearchableSelect + amount
+- Running total vs payment amount shown
+
+### Report Print Fix
+- New helper: `/app/frontend/src/lib/printer.js` — `printHtml(title, body)` opens a fresh window with self-contained styled HTML and auto-prints
+- Applied to: Customer Outstanding, Global Outstanding, Supplier Payable, Customer Payments, Supplier Payments, Financial Summary
+- Print output contains only report tables/totals (no sidebar, no buttons)
+
+### Payment Reports (NEW)
+- `GET /api/reports/customer-payments?date_from=&date_to=` — items (id, date, customer_name, amount, method, cheque info, notes), total, count
+- `GET /api/reports/supplier-payments?date_from=&date_to=` — same shape for suppliers
+- Frontend: Reports tabs with date-range pickers and Generate/Print buttons
+
+### Financial Summary (NEW)
+- `GET /api/reports/financial-summary?date_from=&date_to=` — total_sales, total_cost, total_profit, total_purchases, total_supplier_paid, total_payables, invoice_count, customer_count, customers[]
+- Frontend: 6 metric cards + customer list; printable
+
+### Bill Numbering Configuration
+- `GET /api/settings/counters` → {invoices, purchases, orders}
+- `PUT /api/settings/counters/{name}` {value: int} — rejects values below highest existing number to prevent duplicates
+- Frontend: Reports → Settings tab with input per counter + Save button; preview of next number (e.g. INV-1051)
+
+### Testing (iteration_4.json)
+- Backend: 13/13 pytest cases passed (100%) — test_phase3.py
+- Frontend: All Phase 3 flows verified — Dashboard (no New Invoice, quick-action auto-open), Analytics page, multi-cheque UI, edit payment pre-fill, all new report tabs, Settings counter inputs
+
+## Prioritized Backlog (post-Phase 3)
+
+### P1
+- Admin role enforcement on `/api/settings/counters/*` (currently any authenticated user)
+- Batched $lookup in `financial-summary` and dashboard `total_profit` (avoid O(N*M) product lookups)
+- Add `<DialogDescription>` to shadcn DialogContent instances to silence a11y console warnings
+- Email OTP integration (Resend/SendGrid) — skipped for local
+
+### P2
+- Aging analysis (30/60/90 days) on customer/supplier profiles
+- Quotation system
+- Export to Excel/PDF (in addition to HTML print)
+- WhatsApp invoice sharing
+- Auto-promote order → invoice when all items delivered

@@ -193,6 +193,14 @@ async def update_payment(payment_id: str, data: PaymentUpdate, user=Depends(get_
                 detail=f"Allocation total ({alloc_total}) exceeds payment amount ({new_amount})"
             )
         update_doc["allocations"] = [a.model_dump() for a in data.allocations]
+    elif data.amount is not None:
+        # Amount changed but allocations kept → ensure existing allocations still fit
+        existing_alloc_total = round(sum(a.get("amount", 0) for a in payment.get("allocations", [])), 2)
+        if existing_alloc_total > round(new_amount, 2) + 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Existing allocation total ({existing_alloc_total}) exceeds new payment amount ({new_amount}). Update allocations too."
+            )
 
     if data.amount is not None:
         update_doc["amount"] = data.amount
