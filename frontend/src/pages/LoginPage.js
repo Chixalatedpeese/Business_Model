@@ -20,11 +20,18 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const formatError = (detail) => {
-    if (!detail) return "Something went wrong";
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail)) return detail.map(e => e?.msg || JSON.stringify(e)).join(" ");
-    return String(detail);
+  const formatError = (err) => {
+    const detail = err?.response?.data?.detail;
+    if (detail) {
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) return detail.map(e => e?.msg || JSON.stringify(e)).join(" ");
+      return String(detail);
+    }
+    // Network error / no response from backend
+    if (err?.message === "Network Error") return "Cannot reach backend. Check your connection.";
+    if (err?.code === "ERR_NETWORK") return "Network error — backend unreachable.";
+    if (err?.response?.status) return `Request failed with status ${err.response.status}`;
+    return err?.message || "Something went wrong";
   };
 
   const handleLogin = async (e) => {
@@ -34,7 +41,8 @@ export default function LoginPage() {
     try {
       await login(email, password);
     } catch (err) {
-      setError(formatError(err.response?.data?.detail) || err.message);
+      console.error("Login error:", err);
+      setError(formatError(err));
     } finally { setLoading(false); }
   };
 
@@ -45,7 +53,8 @@ export default function LoginPage() {
     try {
       await register(email, password, name);
     } catch (err) {
-      setError(formatError(err.response?.data?.detail) || err.message);
+      console.error("Register error:", err);
+      setError(formatError(err));
     } finally { setLoading(false); }
   };
 
@@ -59,7 +68,8 @@ export default function LoginPage() {
       setMode("reset");
       toast.success("OTP generated successfully");
     } catch (err) {
-      setError(formatError(err.response?.data?.detail) || err.message);
+      console.error("Forgot password error:", err);
+      setError(formatError(err));
     } finally { setLoading(false); }
   };
 
@@ -76,7 +86,8 @@ export default function LoginPage() {
       setNewPassword("");
       setGeneratedOtp("");
     } catch (err) {
-      setError(formatError(err.response?.data?.detail) || err.message);
+      console.error("Reset password error:", err);
+      setError(formatError(err));
     } finally { setLoading(false); }
   };
 
