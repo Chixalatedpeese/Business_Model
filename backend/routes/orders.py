@@ -138,17 +138,42 @@ async def sync_order_purchases(order_id: str):
 
 
 async def _build_items(item_inputs: List[OrderItemInput]) -> tuple:
-    """Build item docs; reserve returned_stock as needed. Returns (items, total)."""
+    """Build item docs; reserve returned_stock as needed. Returns (items, total).
+    Pre-validates ALL items (and sums by stock id) before reserving, so a later
+    failure cannot leave stock half-reserved."""
+    # Phase 1 — validate without mutation. Aggregate requested qty per stock id so a
+    # single order using the same stock twice doesn't over-consume.
+    stock_requests: dict = {}
+    for item in item_inputs:
+        source = item.source or "supplier"
+        if source == "returned_stock":
+            if not item.returned_stock_id:
+                raise HTTPException(status_code=400, detail="returned_stock_id required for returned_stock source")
+            stock_requests[item.returned_stock_id] = stock_requests.get(item.returned_stock_id, 0) + float(item.quantity)
+    stock_docs: dict = {}
+    for sid, qty in stock_requests.items():
+        stock = await db.returned_stock.find_one({"id": sid}, {"_id": 0})
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"Returned stock {sid} not found")
+        available = float(stock.get("quantity_available", 0)) - float(stock.get("quantity_used", 0))
+        if qty > available + 0.0001:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {available} of '{stock.get('product_name')}' available in returned stock"
+            )
+        stock_docs[sid] = stock
+
+    # Phase 2 — reserve and build (only after all validations passed)
+    for sid, qty in stock_requests.items():
+        await db.returned_stock.update_one({"id": sid}, {"$inc": {"quantity_used": qty}})
+
     items = []
     total = 0
     for item in item_inputs:
         source = item.source or "supplier"
         cost_price = 0
         if source == "returned_stock":
-            if not item.returned_stock_id:
-                raise HTTPException(status_code=400, detail="returned_stock_id required for returned_stock source")
-            stock = await _reserve_returned_stock(item.returned_stock_id, item.quantity)
-            cost_price = float(stock.get("cost_price", 0))
+            cost_price = float(stock_docs[item.returned_stock_id].get("cost_price", 0))
         else:
             product = await db.products.find_one({"id": item.product_id}, {"_id": 0, "cost_price": 1})
             cost_price = product.get("cost_price", 0) if product else 0

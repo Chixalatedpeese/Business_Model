@@ -160,3 +160,77 @@ Simple, fast, practical business management system for a Sri Lankan trading/dist
 - Export to Excel/PDF (in addition to HTML print)
 - WhatsApp invoice sharing
 - Auto-promote order → invoice when all items delivered
+
+## Phase 4 — Critical Logic + Migration (April 24, 2026) ✅ COMPLETE
+
+### Order Edit Capability
+- `PUT /api/orders/{id}` — edits items/quantities/supplier/notes. Blocked with 400 if invoice already exists ("Cannot edit — invoice X already generated")
+- `DELETE /api/orders/{id}` — same lock; also releases any reserved returned_stock
+- Frontend: Pencil icon per row (hidden when `has_invoice=true`); "invoiced" lock badge visible on locked rows
+
+### Supplier Invoice Number
+- Per-order-item field `supplier_invoice_number` propagated to auto-generated purchases
+- Editable before order confirmation; appears in Supplier Payable report
+- Historical manual purchases accept the field as well
+
+### Hybrid Invoice Numbering
+- `POST /api/invoices` and `POST /api/invoices/from-order/{id}` both accept optional `invoice_number` (manual override)
+- Manual entries validated unique via Mongo index on `invoice_number`; duplicate → 400
+- Auto-increment (INV-XXXX) still works when no manual provided
+- `manual_number: bool` flag stored on document
+- Same for purchases (`purchase_number`)
+
+### Returns + Temporary Stock Module (CRITICAL)
+- New collection `returns`: `{return_number (RET-XXXX), invoice_id, customer_id, items[{product_id, quantity, unit_price, cost_price, reason, amount}], total_amount, created_at}`
+- `POST /api/returns` — validates cumulative return qty ≤ invoice qty minus prior returns
+- Auto-creates `returned_stock` entry per item with **cost_price preserved** (critical: never zero)
+- `DELETE /api/returns/{id}` — reverses stock; blocked if any of the created stock was already used in an order
+- New collection `returned_stock`: `{product_id, quantity_available, quantity_used, cost_price, unit_price, source (customer_return|manual_opening), return_id, invoice_id, customer_id, created_at}`
+- Orders can consume returned stock: `item.source="returned_stock"` + `returned_stock_id`
+  - Reserves the stock (increments `quantity_used`)
+  - Uses the entry's `cost_price` for profit calc
+  - Does NOT create a supplier payable
+- Over-consume blocked: "Only X of 'Product' available in returned stock"
+- **Atomic reservation** (Phase 4 polish): `_build_items` pre-validates ALL items before reserving ANY — prevents partial reservations on failure
+- Aggregate validation across items in same order (using same stock twice doesn't over-consume)
+- Frontend /returns page with two tabs (Customer Returns + Returned Stock), invoice-driven return dialog, manual opening-stock dialog
+
+### Historical Data Migration
+- `POST /api/invoices` accepts backdated `created_at` + manual `invoice_number`
+- `POST /api/purchases` accepts backdated `created_at` + manual `purchase_number` + `supplier_invoice_number`
+- `POST /api/payments` accepts backdated `created_at`
+- `POST /api/returned-stock` creates manual opening stock (source=manual_opening)
+- Opening balances: `customer.opening_balance` and `supplier.opening_balance` fields; additive to outstanding/payable in all reports
+- Frontend /migration page with four tabs: Historical Invoice / Historical Purchase / Historical Payment / Opening Balance
+
+### Customer Outstanding Formula (Phase 4)
+`outstanding = opening_balance + Σ invoices.total_amount - Σ payments.amount - Σ returns.items.amount`
+Applied in:
+- `GET /api/customers` (list)
+- `GET /api/customers/{id}` (detail)
+- `GET /api/reports/customer-outstanding/{id}`
+- `GET /api/reports/global-outstanding`
+
+### Supplier Payable Formula
+`payable = opening_balance + Σ purchases.total_amount - Σ supplier_payments.amount`
+
+### Testing (iteration_5.json)
+- Backend: 16/16 pytest cases PASS (100%) — returns, returned_stock, order edit lock, hybrid numbering, cost preservation, over-consume blocked, opening balances in all reports
+- Frontend: Sidebar 12 items, /returns + /migration pages, invoiced badges, edit pencil only on editable orders — all verified, no JS errors
+
+## Post-Phase 4 Backlog
+
+### P1
+- Admin role gate on `/api/settings/counters/*` (any user can change bill numbering)
+- Batch $lookup in `financial-summary` (O(N*M) per-item cost lookup)
+- Single $facet for customer list (3 aggregations currently)
+- Consistency: replace native `<input type=date>` with shadcn Calendar in MigrationPage
+- `<DialogDescription>` a11y on shadcn dialogs
+
+### P2
+- Aging analysis (30/60/90 days) per customer/supplier
+- Quotation system
+- Excel/PDF export
+- WhatsApp invoice share
+- Partial cheque clearance tracking (cheque realized/bounced status)
+- Credit notes as first-class (currently returns function as credit reducers)
