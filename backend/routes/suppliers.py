@@ -14,6 +14,7 @@ class SupplierCreate(BaseModel):
     phone: Optional[str] = ""
     address: Optional[str] = ""
     is_primary: Optional[bool] = False
+    opening_balance: Optional[float] = 0
 
 
 class SupplierUpdate(BaseModel):
@@ -21,6 +22,7 @@ class SupplierUpdate(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     is_primary: Optional[bool] = None
+    opening_balance: Optional[float] = None
 
 
 @router.get("")
@@ -45,7 +47,8 @@ async def list_suppliers(search: Optional[str] = None, user=Depends(get_current_
     pay_map = {t["_id"]: t["total"] for t in pay_totals}
 
     for s in suppliers:
-        s["payable"] = pur_map.get(s["id"], 0) - pay_map.get(s["id"], 0)
+        opening = float(s.get("opening_balance", 0))
+        s["payable"] = round(opening + pur_map.get(s["id"], 0) - pay_map.get(s["id"], 0), 2)
 
     return suppliers
 
@@ -70,7 +73,8 @@ async def get_supplier(supplier_id: str, user=Depends(get_current_user)):
     pay_result = await db.payments.aggregate(pay_pipeline).to_list(1)
     total_paid = pay_result[0]["total"] if pay_result else 0
 
-    supplier["payable"] = total_purchased - total_paid
+    supplier["opening_balance"] = round(float(supplier.get("opening_balance", 0)), 2)
+    supplier["payable"] = round(supplier["opening_balance"] + total_purchased - total_paid, 2)
     supplier["purchases"] = await db.purchases.find({"supplier_id": supplier_id}, {"_id": 0}).sort("created_at", -1).to_list(50)
     supplier["payments"] = await db.payments.find({"entity_id": supplier_id, "payment_type": "supplier"}, {"_id": 0}).sort("created_at", -1).to_list(50)
 
@@ -97,6 +101,7 @@ async def create_supplier(data: SupplierCreate, user=Depends(get_current_user)):
         "phone": data.phone or "",
         "address": data.address or "",
         "is_primary": data.is_primary or False,
+        "opening_balance": float(data.opening_balance or 0),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.suppliers.insert_one(doc)

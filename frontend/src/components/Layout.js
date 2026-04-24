@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   LayoutDashboard, Users, Truck, Package, ShoppingCart,
-  FileText, Receipt, CreditCard, BarChart3, LineChart, LogOut, Menu
+  FileText, Receipt, CreditCard, BarChart3, LineChart, RotateCcw, History, LogOut, Menu
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -17,8 +17,10 @@ const NAV_ITEMS = [
   { to: "/purchases", icon: FileText, label: "Purchases" },
   { to: "/invoices", icon: Receipt, label: "Invoices" },
   { to: "/payments", icon: CreditCard, label: "Payments" },
+  { to: "/returns", icon: RotateCcw, label: "Returns" },
   { to: "/analytics", icon: LineChart, label: "Analytics" },
   { to: "/reports", icon: BarChart3, label: "Reports" },
+  { to: "/migration", icon: History, label: "Migration" },
 ];
 
 export default function Layout() {

@@ -25,6 +25,14 @@ async def customer_outstanding(customer_id: str, user=Depends(get_current_user))
 
     invoices = await db.invoices.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
+    # Precompute returns per invoice
+    returns_agg = await db.returns.aggregate([
+        {"$match": {"customer_id": customer_id}},
+        {"$unwind": "$items"},
+        {"$group": {"_id": "$invoice_id", "total": {"$sum": "$items.amount"}}}
+    ]).to_list(1000)
+    returns_map = {r["_id"]: r["total"] for r in returns_agg}
+
     report_items = []
     total_outstanding = 0
     for inv in invoices:
@@ -35,24 +43,31 @@ async def customer_outstanding(customer_id: str, user=Depends(get_current_user))
             {"$group": {"_id": None, "total": {"$sum": "$allocations.amount"}}}
         ]).to_list(1)
         paid = alloc_result[0]["total"] if alloc_result else 0
-        balance = inv["total_amount"] - paid
+        returned = returns_map.get(inv["id"], 0)
+        balance = inv["total_amount"] - paid - returned
 
-        if balance > 0:
+        if balance > 0.01:
             report_items.append({
                 "invoice_number": inv["invoice_number"],
                 "invoice_id": inv["id"],
                 "date": inv["created_at"][:10],
                 "total_amount": inv["total_amount"],
                 "paid": paid,
+                "returned": round(returned, 2),
                 "balance": round(balance, 2),
                 "status": inv.get("status", "unpaid")
             })
             total_outstanding += balance
 
+    # Opening balance contribution
+    opening = float(customer.get("opening_balance", 0))
+    total_outstanding += opening
+
     return {
         "customer_name": customer.get("name", ""),
         "customer_shop": customer.get("shop_name", ""),
         "customer_phone": customer.get("phone", ""),
+        "opening_balance": round(opening, 2),
         "items": report_items,
         "total_outstanding": round(total_outstanding, 2),
         "generated_at": datetime.now(timezone.utc).isoformat()
@@ -74,11 +89,18 @@ async def global_outstanding(user=Depends(get_current_user)):
     ]).to_list(1000)
     pay_map = {t["_id"]: t["total"] for t in pay_totals}
 
+    ret_totals = await db.returns.aggregate([
+        {"$unwind": "$items"},
+        {"$group": {"_id": "$customer_id", "total": {"$sum": "$items.amount"}}}
+    ]).to_list(1000)
+    ret_map = {t["_id"]: t["total"] for t in ret_totals}
+
     report = []
     grand_total = 0
     for c in customers:
-        outstanding = inv_map.get(c["id"], 0) - pay_map.get(c["id"], 0)
-        if outstanding > 0:
+        opening = float(c.get("opening_balance", 0))
+        outstanding = opening + inv_map.get(c["id"], 0) - pay_map.get(c["id"], 0) - ret_map.get(c["id"], 0)
+        if outstanding > 0.01:
             invoices = await db.invoices.find(
                 {"customer_id": c["id"], "status": {"$ne": "paid"}},
                 {"_id": 0, "invoice_number": 1, "total_amount": 1, "created_at": 1, "status": 1}
@@ -87,6 +109,7 @@ async def global_outstanding(user=Depends(get_current_user)):
                 "customer_id": c["id"],
                 "customer_name": c.get("name", ""),
                 "customer_shop": c.get("shop_name", ""),
+                "opening_balance": round(opening, 2),
                 "outstanding": round(outstanding, 2),
                 "invoices": [{"invoice_number": i["invoice_number"], "amount": i["total_amount"], "date": i["created_at"][:10], "status": i.get("status", "unpaid")} for i in invoices]
             })
@@ -117,17 +140,19 @@ async def supplier_payable(user=Depends(get_current_user)):
     report = []
     grand_total = 0
     for s in suppliers:
-        payable = pur_map.get(s["id"], 0) - pay_map.get(s["id"], 0)
-        if payable > 0:
+        opening = float(s.get("opening_balance", 0))
+        payable = opening + pur_map.get(s["id"], 0) - pay_map.get(s["id"], 0)
+        if payable > 0.01:
             purchases = await db.purchases.find(
                 {"supplier_id": s["id"]},
-                {"_id": 0, "purchase_number": 1, "total_amount": 1, "created_at": 1, "order_number": 1}
+                {"_id": 0, "purchase_number": 1, "total_amount": 1, "created_at": 1, "order_number": 1, "supplier_invoice_number": 1}
             ).sort("created_at", -1).to_list(100)
             report.append({
                 "supplier_id": s["id"],
                 "supplier_name": s.get("name", ""),
+                "opening_balance": round(opening, 2),
                 "payable": round(payable, 2),
-                "purchases": [{"purchase_number": p["purchase_number"], "amount": p["total_amount"], "date": p["created_at"][:10], "order": p.get("order_number", "")} for p in purchases]
+                "purchases": [{"purchase_number": p["purchase_number"], "supplier_invoice_number": p.get("supplier_invoice_number", ""), "amount": p["total_amount"], "date": p["created_at"][:10], "order": p.get("order_number", "")} for p in purchases]
             })
             grand_total += payable
 

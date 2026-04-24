@@ -19,10 +19,30 @@ class PurchaseItemInput(BaseModel):
 class PurchaseCreate(BaseModel):
     supplier_id: str
     supplier_name: str
+    supplier_invoice_number: Optional[str] = ""
     order_id: Optional[str] = None
     order_number: Optional[str] = ""
     items: List[PurchaseItemInput]
     notes: Optional[str] = ""
+    purchase_number: Optional[str] = None   # manual override for historical data
+    created_at: Optional[str] = None         # backdated
+
+
+class PurchaseUpdate(BaseModel):
+    supplier_invoice_number: Optional[str] = None
+    notes: Optional[str] = None
+
+
+async def _resolve_purchase_number(manual: Optional[str]) -> str:
+    if manual:
+        manual = manual.strip() or None
+    if manual:
+        existing = await db.purchases.find_one({"purchase_number": manual}, {"_id": 0, "id": 1})
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Purchase number '{manual}' already exists")
+        return manual
+    seq = await get_next_sequence("purchases")
+    return f"PUR-{seq:04d}"
 
 
 @router.get("")
@@ -33,6 +53,7 @@ async def list_purchases(search: Optional[str] = None, supplier_id: Optional[str
         conditions.append({"$or": [
             {"purchase_number": {"$regex": search, "$options": "i"}},
             {"supplier_name": {"$regex": search, "$options": "i"}},
+            {"supplier_invoice_number": {"$regex": search, "$options": "i"}},
             {"order_number": {"$regex": search, "$options": "i"}}
         ]})
     if supplier_id:
@@ -54,8 +75,7 @@ async def get_purchase(purchase_id: str, user=Depends(get_current_user)):
 
 @router.post("")
 async def create_purchase(data: PurchaseCreate, user=Depends(get_current_user)):
-    seq = await get_next_sequence("purchases")
-    purchase_number = f"PUR-{seq:04d}"
+    purchase_number = await _resolve_purchase_number(data.purchase_number)
 
     items = []
     total = 0
@@ -66,7 +86,7 @@ async def create_purchase(data: PurchaseCreate, user=Depends(get_current_user)):
             "product_name": item.product_name,
             "quantity": item.quantity,
             "cost_price": item.cost_price,
-            "amount": item.quantity * item.cost_price
+            "amount": round(item.quantity * item.cost_price, 2)
         }
         total += item_doc["amount"]
         items.append(item_doc)
@@ -76,17 +96,20 @@ async def create_purchase(data: PurchaseCreate, user=Depends(get_current_user)):
         "purchase_number": purchase_number,
         "supplier_id": data.supplier_id,
         "supplier_name": data.supplier_name,
+        "supplier_invoice_number": data.supplier_invoice_number or "",
         "order_id": data.order_id or "",
         "order_number": data.order_number or "",
         "items": items,
-        "total_amount": total,
+        "total_amount": round(total, 2),
+        "auto_generated": False,
+        "manual_number": bool(data.purchase_number),
         "notes": data.notes or "",
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": data.created_at or datetime.now(timezone.utc).isoformat()
     }
     await db.purchases.insert_one(doc)
     doc.pop("_id", None)
 
-    # Update order item statuses to "ordered" if linked
+    # If linked to order, advance item statuses to "ordered" where matching
     if data.order_id:
         order = await db.orders.find_one({"id": data.order_id}, {"_id": 0})
         if order:
@@ -103,6 +126,16 @@ async def create_purchase(data: PurchaseCreate, user=Depends(get_current_user)):
                 await db.orders.update_one({"id": data.order_id}, {"$set": {"items": order["items"], "status": overall}})
 
     return doc
+
+
+@router.put("/{purchase_id}")
+async def update_purchase(purchase_id: str, data: PurchaseUpdate, user=Depends(get_current_user)):
+    update = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    await db.purchases.update_one({"id": purchase_id}, {"$set": update})
+    purchase = await db.purchases.find_one({"id": purchase_id}, {"_id": 0})
+    return purchase
 
 
 @router.delete("/{purchase_id}")

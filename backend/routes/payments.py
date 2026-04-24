@@ -34,6 +34,7 @@ class PaymentCreate(BaseModel):
     cheques: Optional[List[ChequeDetail]] = []
     allocations: Optional[List[PaymentAllocation]] = []
     notes: Optional[str] = ""
+    created_at: Optional[str] = None   # optional backdated entry
 
 
 class PaymentUpdate(BaseModel):
@@ -153,7 +154,7 @@ async def create_payment(data: PaymentCreate, user=Depends(get_current_user)):
         "cheques": [c.model_dump() for c in (data.cheques or [])],
         "allocations": [a.model_dump() for a in (data.allocations or [])],
         "notes": data.notes or "",
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": data.created_at or datetime.now(timezone.utc).isoformat()
     }
     await db.payments.insert_one(doc)
     doc.pop("_id", None)

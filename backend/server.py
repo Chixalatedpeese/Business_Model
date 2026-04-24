@@ -156,6 +156,8 @@ from routes.dashboard import router as dashboard_router
 from routes.reports import router as reports_router
 from routes.analytics import router as analytics_router
 from routes.settings import router as settings_router
+from routes.returns import router as returns_router
+from routes.returned_stock import router as returned_stock_router
 
 app.include_router(customers_router)
 app.include_router(suppliers_router)
@@ -168,6 +170,8 @@ app.include_router(dashboard_router)
 app.include_router(reports_router)
 app.include_router(analytics_router)
 app.include_router(settings_router)
+app.include_router(returns_router)
+app.include_router(returned_stock_router)
 
 
 @app.get("/api/health")
@@ -186,6 +190,10 @@ async def startup():
     await db.purchases.create_index("id", unique=True)
     await db.invoices.create_index("id", unique=True)
     await db.payments.create_index("id", unique=True)
+    await db.returns.create_index("id", unique=True)
+    await db.returned_stock.create_index("id", unique=True)
+    await db.invoices.create_index("invoice_number", unique=True)
+    await db.purchases.create_index("purchase_number", unique=True)
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")

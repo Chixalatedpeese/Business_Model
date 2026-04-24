@@ -24,6 +24,38 @@ class InvoiceCreate(BaseModel):
     order_number: Optional[str] = ""
     items: List[InvoiceItemInput]
     notes: Optional[str] = ""
+    invoice_number: Optional[str] = None   # manual override (hybrid numbering)
+    created_at: Optional[str] = None        # backdated entry (ISO string)
+
+
+class InvoiceFromOrderInput(BaseModel):
+    invoice_number: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+async def _resolve_invoice_number(manual_number: Optional[str]) -> str:
+    """Returns the invoice_number to use. If manual, validates uniqueness;
+    else draws next from counter. Prevents duplicates strictly."""
+    if manual_number:
+        manual_number = manual_number.strip()
+        if not manual_number:
+            manual_number = None
+    if manual_number:
+        existing = await db.invoices.find_one({"invoice_number": manual_number}, {"_id": 0, "id": 1})
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Invoice number '{manual_number}' already exists")
+        return manual_number
+    seq = await get_next_sequence("invoices")
+    return f"INV-{seq:04d}"
+
+
+async def _compute_total_returns(invoice_id: str) -> float:
+    res = await db.returns.aggregate([
+        {"$match": {"invoice_id": invoice_id}},
+        {"$unwind": "$items"},
+        {"$group": {"_id": None, "total": {"$sum": "$items.amount"}}}
+    ]).to_list(1)
+    return res[0]["total"] if res else 0
 
 
 @router.get("")
@@ -53,7 +85,6 @@ async def get_invoice(invoice_id: str, user=Depends(get_current_user)):
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    # Calculate paid amount from allocations
     pay_result = await db.payments.aggregate([
         {"$match": {"payment_type": "customer"}},
         {"$unwind": "$allocations"},
@@ -61,15 +92,16 @@ async def get_invoice(invoice_id: str, user=Depends(get_current_user)):
         {"$group": {"_id": None, "total": {"$sum": "$allocations.amount"}}}
     ]).to_list(1)
     invoice["paid_amount"] = pay_result[0]["total"] if pay_result else 0
-    invoice["balance"] = invoice["total_amount"] - invoice["paid_amount"]
+    invoice["returned_amount"] = await _compute_total_returns(invoice_id)
+    # Effective outstanding = total_amount - paid - returns
+    invoice["balance"] = round(invoice["total_amount"] - invoice["paid_amount"] - invoice["returned_amount"], 2)
 
     return invoice
 
 
 @router.post("")
 async def create_invoice(data: InvoiceCreate, user=Depends(get_current_user)):
-    seq = await get_next_sequence("invoices")
-    invoice_number = f"INV-{seq:04d}"
+    invoice_number = await _resolve_invoice_number(data.invoice_number)
 
     items = []
     total = 0
@@ -80,10 +112,12 @@ async def create_invoice(data: InvoiceCreate, user=Depends(get_current_user)):
             "product_name": item.product_name,
             "quantity": item.quantity,
             "unit_price": item.unit_price,
-            "amount": item.quantity * item.unit_price
+            "amount": round(item.quantity * item.unit_price, 2)
         }
         total += item_doc["amount"]
         items.append(item_doc)
+
+    created_at = data.created_at or datetime.now(timezone.utc).isoformat()
 
     doc = {
         "id": str(uuid.uuid4()),
@@ -94,10 +128,11 @@ async def create_invoice(data: InvoiceCreate, user=Depends(get_current_user)):
         "order_id": data.order_id or "",
         "order_number": data.order_number or "",
         "items": items,
-        "total_amount": total,
+        "total_amount": round(total, 2),
         "status": "unpaid",
         "notes": data.notes or "",
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "manual_number": bool(data.invoice_number),
+        "created_at": created_at
     }
     await db.invoices.insert_one(doc)
     doc.pop("_id", None)
@@ -105,18 +140,17 @@ async def create_invoice(data: InvoiceCreate, user=Depends(get_current_user)):
 
 
 @router.post("/from-order/{order_id}")
-async def create_invoice_from_order(order_id: str, user=Depends(get_current_user)):
+async def create_invoice_from_order(order_id: str, data: Optional[InvoiceFromOrderInput] = None, user=Depends(get_current_user)):
+    data = data or InvoiceFromOrderInput()
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    # Check if invoice already exists for this order
     existing = await db.invoices.find_one({"order_id": order_id}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Invoice already exists for this order")
 
-    seq = await get_next_sequence("invoices")
-    invoice_number = f"INV-{seq:04d}"
+    invoice_number = await _resolve_invoice_number(data.invoice_number)
 
     items = []
     total = 0
@@ -127,12 +161,11 @@ async def create_invoice_from_order(order_id: str, user=Depends(get_current_user
             "product_name": oi["product_name"],
             "quantity": oi["quantity"],
             "unit_price": oi["unit_price"],
-            "amount": oi["quantity"] * oi["unit_price"]
+            "amount": round(oi["quantity"] * oi["unit_price"], 2)
         }
         total += item_doc["amount"]
         items.append(item_doc)
 
-    # Fetch customer shop_name
     customer = await db.customers.find_one({"id": order["customer_id"]}, {"_id": 0})
     shop_name = customer.get("shop_name", "") if customer else ""
 
@@ -145,10 +178,11 @@ async def create_invoice_from_order(order_id: str, user=Depends(get_current_user
         "order_id": order_id,
         "order_number": order["order_number"],
         "items": items,
-        "total_amount": total,
+        "total_amount": round(total, 2),
         "status": "unpaid",
         "notes": "",
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "manual_number": bool(data.invoice_number),
+        "created_at": data.created_at or datetime.now(timezone.utc).isoformat()
     }
     await db.invoices.insert_one(doc)
     doc.pop("_id", None)

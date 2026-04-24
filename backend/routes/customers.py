@@ -14,6 +14,7 @@ class CustomerCreate(BaseModel):
     phone: Optional[str] = ""
     shop_name: Optional[str] = ""
     address: Optional[str] = ""
+    opening_balance: Optional[float] = 0
 
 
 class CustomerUpdate(BaseModel):
@@ -21,6 +22,7 @@ class CustomerUpdate(BaseModel):
     phone: Optional[str] = None
     shop_name: Optional[str] = None
     address: Optional[str] = None
+    opening_balance: Optional[float] = None
 
 
 @router.get("")
@@ -46,8 +48,15 @@ async def list_customers(search: Optional[str] = None, user=Depends(get_current_
     ]).to_list(1000)
     pay_map = {t["_id"]: t["total"] for t in pay_totals}
 
+    ret_totals = await db.returns.aggregate([
+        {"$unwind": "$items"},
+        {"$group": {"_id": "$customer_id", "total": {"$sum": "$items.amount"}}}
+    ]).to_list(1000)
+    ret_map = {t["_id"]: t["total"] for t in ret_totals}
+
     for c in customers:
-        c["outstanding"] = inv_map.get(c["id"], 0) - pay_map.get(c["id"], 0)
+        opening = float(c.get("opening_balance", 0))
+        c["outstanding"] = round(opening + inv_map.get(c["id"], 0) - pay_map.get(c["id"], 0) - ret_map.get(c["id"], 0), 2)
 
     return customers
 
@@ -72,7 +81,18 @@ async def get_customer(customer_id: str, user=Depends(get_current_user)):
     pay_result = await db.payments.aggregate(pay_pipeline).to_list(1)
     total_paid = pay_result[0]["total"] if pay_result else 0
 
-    customer["outstanding"] = total_invoiced - total_paid
+    ret_pipeline = [
+        {"$match": {"customer_id": customer_id}},
+        {"$unwind": "$items"},
+        {"$group": {"_id": None, "total": {"$sum": "$items.amount"}}}
+    ]
+    ret_result = await db.returns.aggregate(ret_pipeline).to_list(1)
+    total_returned = ret_result[0]["total"] if ret_result else 0
+
+    opening = float(customer.get("opening_balance", 0))
+    customer["outstanding"] = round(opening + total_invoiced - total_paid - total_returned, 2)
+    customer["total_returned"] = round(total_returned, 2)
+    customer["opening_balance"] = round(opening, 2)
     customer["invoices"] = await db.invoices.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).to_list(50)
     customer["payments"] = await db.payments.find({"entity_id": customer_id, "payment_type": "customer"}, {"_id": 0}).sort("created_at", -1).to_list(50)
     customer["orders"] = await db.orders.find({"customer_id": customer_id}, {"_id": 0}).sort("created_at", -1).to_list(50)
@@ -106,6 +126,7 @@ async def create_customer(data: CustomerCreate, user=Depends(get_current_user)):
         "phone": data.phone or "",
         "shop_name": data.shop_name or "",
         "address": data.address or "",
+        "opening_balance": float(data.opening_balance or 0),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.customers.insert_one(doc)
